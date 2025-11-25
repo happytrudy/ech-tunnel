@@ -116,23 +116,31 @@ const (
 
 // 客户端启动时查询 ECH 配置并缓存
 func prepareECH() error {
-	log.Printf("[客户端] 使用 DNS 服务器查询 ECH: %s -> %s", dnsServer, echDomain)
-	echBase64, err := queryHTTPSRecord(echDomain, dnsServer)
-	if err != nil {
-		return fmt.Errorf("DNS 查询失败: %w", err)
+	for {
+		log.Printf("[客户端] 使用 DNS 服务器查询 ECH: %s -> %s", dnsServer, echDomain)
+		echBase64, err := queryHTTPSRecord(echDomain, dnsServer)
+		if err != nil {
+			log.Printf("[客户端] DNS 查询失败: %v，2秒后重试...", err)
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		if echBase64 == "" {
+			log.Printf("[客户端] 未找到 ECH 参数（HTTPS RR key=echconfig/5），2秒后重试...")
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		raw, err := base64.StdEncoding.DecodeString(echBase64)
+		if err != nil {
+			log.Printf("[客户端] ECH Base64 解码失败: %v，2秒后重试...", err)
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		echListMu.Lock()
+		echList = raw
+		echListMu.Unlock()
+		log.Printf("[客户端] ECHConfigList 长度: %d 字节", len(raw))
+		return nil
 	}
-	if echBase64 == "" {
-		return errors.New("未找到 ECH 参数（HTTPS RR key=echconfig/5）")
-	}
-	raw, err := base64.StdEncoding.DecodeString(echBase64)
-	if err != nil {
-		return fmt.Errorf("ECH Base64 解码失败: %w", err)
-	}
-	echListMu.Lock()
-	echList = raw
-	echListMu.Unlock()
-	log.Printf("[客户端] ECHConfigList 长度: %d 字节", len(raw))
-	return nil
 }
 
 // 刷新 ECH 配置（用于重试）
@@ -177,6 +185,9 @@ func queryHTTPSRecord(domain, dnsServer string) (string, error) {
 	}
 	defer conn.Close()
 
+	// 设置 2 秒超时
+	conn.SetDeadline(time.Now().Add(2 * time.Second))
+
 	if _, err = conn.Write(query); err != nil {
 		return "", fmt.Errorf("发送查询失败: %v", err)
 	}
@@ -184,6 +195,9 @@ func queryHTTPSRecord(domain, dnsServer string) (string, error) {
 	response := make([]byte, 4096)
 	n, err := conn.Read(response)
 	if err != nil {
+		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+			return "", fmt.Errorf("DNS 查询超时")
+		}
 		return "", fmt.Errorf("读取 DNS 响应失败: %v", err)
 	}
 	return parseDNSResponse(response[:n])
