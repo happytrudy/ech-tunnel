@@ -1,0 +1,11 @@
+{
+  "listen": "tcp://127.0.0.1:1080,127.0.0.1:1081",
+  "forward": "wss://example.com:443",
+  "ip": "1.2.3.4",
+  "token": "your-auth-token",
+  "cidr": "0.0.0.0/0,::/0",
+  "dns": "dns.alidns.com/dns-query",
+  "ech": "cloudflare-ech.com",
+  "fallback": false,
+  "connections": 3
+}

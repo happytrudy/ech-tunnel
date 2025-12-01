@@ -11,6 +11,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"flag"
@@ -21,6 +22,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -40,6 +42,7 @@ var (
 	token         string
 	cidrs         string
 	connectionNum int
+	configFile    string // 配置文件路径
 
 	// 新增 ECH/DNS 参数
 	dnsServer string // -dns
@@ -64,7 +67,23 @@ type SOCKS5Config struct {
 	Password string
 }
 
+// JSON 配置文件结构
+type Config struct {
+	Listen      string `json:"listen"`
+	Forward     string `json:"forward"`
+	IP          string `json:"ip"`
+	Cert        string `json:"cert"`
+	Key         string `json:"key"`
+	Token       string `json:"token"`
+	CIDR        string `json:"cidr"`
+	DNS         string `json:"dns"`
+	ECH         string `json:"ech"`
+	Fallback    bool   `json:"fallback"`
+	Connections int    `json:"connections"`
+}
+
 func init() {
+	flag.StringVar(&configFile, "config", "", "JSON 配置文件路径")
 	flag.StringVar(&listenAddr, "l", "", "监听地址 (tcp://监听1/目标1,... 或 ws://ip:port/path 或 wss://ip:port/path 或 proxy://[user:pass@]ip:port)")
 	flag.StringVar(&forwardAddr, "f", "", "服务地址/代理地址 (客户端模式: wss://host:port | 服务端模式: socks5://[user:pass@]host:port)")
 	flag.StringVar(&ipAddr, "ip", "", "指定解析的IP地址（仅客户端：将 wss 主机名定向到该 IP 连接，多个IP用逗号分隔）")
@@ -78,8 +97,72 @@ func init() {
 	flag.IntVar(&connectionNum, "n", 3, "每个IP建立的WebSocket连接数量")
 }
 
+// 加载 JSON 配置文件
+func loadConfigFile(filePath string) (*Config, error) {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("读取配置文件失败: %v", err)
+	}
+
+	cfg := &Config{}
+	if err := json.Unmarshal(data, cfg); err != nil {
+		return nil, fmt.Errorf("解析JSON配置失败: %v", err)
+	}
+
+	return cfg, nil
+}
+
+// 应用配置文件参数，命令行参数优先级更高
+func applyConfig(cfg *Config) {
+	// 如果命令行没有指定，则使用配置文件值
+	if listenAddr == "" && cfg.Listen != "" {
+		listenAddr = cfg.Listen
+	}
+	if forwardAddr == "" && cfg.Forward != "" {
+		forwardAddr = cfg.Forward
+	}
+	if ipAddr == "" && cfg.IP != "" {
+		ipAddr = cfg.IP
+	}
+	if certFile == "" && cfg.Cert != "" {
+		certFile = cfg.Cert
+	}
+	if keyFile == "" && cfg.Key != "" {
+		keyFile = cfg.Key
+	}
+	if token == "" && cfg.Token != "" {
+		token = cfg.Token
+	}
+	if cidrs == "0.0.0.0/0,::/0" && cfg.CIDR != "" {
+		// 检查是否为默认值
+		cidrs = cfg.CIDR
+	}
+	if dnsServer == "dns.alidns.com/dns-query" && cfg.DNS != "" {
+		dnsServer = cfg.DNS
+	}
+	if echDomain == "cloudflare-ech.com" && cfg.ECH != "" {
+		echDomain = cfg.ECH
+	}
+	if !fallback && cfg.Fallback {
+		fallback = cfg.Fallback
+	}
+	if connectionNum == 3 && cfg.Connections != 0 {
+		connectionNum = cfg.Connections
+	}
+}
+
 func main() {
 	flag.Parse()
+
+	// 如果指定了配置文件，则加载配置文件
+	if configFile != "" {
+		cfg, err := loadConfigFile(configFile)
+		if err != nil {
+			log.Fatalf("配置文件加载失败: %v", err)
+		}
+		applyConfig(cfg)
+		log.Printf("[配置] 已加载JSON配置文件: %s", configFile)
+	}
 
 	// 解析多IP参数
 	var targetIPs []string
